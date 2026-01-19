@@ -8,7 +8,7 @@ import zipfile
 import io
 
 from clean_data import geocode_data, process_data
-from merge import merge_dataframes
+from merge import merge_dataframes, df_to_geojson
 
 load_dotenv()
 
@@ -53,68 +53,48 @@ def get_existing_dataset_file(datasetId, headers):
         return None
 
 
-def get_dataset_features(datasetId, headers):
-    new_headers = headers
-    new_headers['Content-Type'] = 'application/json'
-    url = 'https://gis-api.atlas.co'
-    reqUrl = f"{url}/datasets/vector/{datasetId}/features"
-    response = requests.request("GET", reqUrl, headers=new_headers)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        return None
-
-
-def delete_existing_dataset_features(datasetId, headers):
-    dataset = get_dataset_features(datasetId, headers)
-    feature_ids = extract_feature_ids(dataset)
-    delete_dict = {datasetId: feature_ids}
-    url = 'https://gis-api.atlas.co'
-    reqUrl = f"{url}/datasets/vector/delete_features"
-
-    print(f"Deleting {len(feature_ids)} features from dataset {datasetId}...")
-    response = requests.request("DELETE", reqUrl, json=delete_dict, headers=headers)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        return None
-
-
 def load_fc_from_geojson(geojson_file_path):
     with open(geojson_file_path) as f:
         data = json.load(f)
     return data
 
 
-def upload_dataset_file(file_path, dataset_id, headers):
-    url = 'https://gis-api.atlas.co'
-    reqUrl = f"{url}/datasets/vector/{dataset_id}/features"
+def upload_dataset_file(file_path, webhook_url):
     data = load_fc_from_geojson(file_path)
-    print(f"Uploading {len(data['features'])} features to dataset {dataset_id}...")
-    response = requests.request("POST", reqUrl, json=data, headers=headers)
+    print(f"Uploading {len(data['features'])} features via webhook...")
+    response = requests.post(webhook_url, json=data)
     print(response.status_code)
     if response.status_code == 200:
-        print("Upload successful.")
+        task_id = response.json().get('task_id')
+        print(f"Upload successful. Task ID: {task_id}")
         return response.json()
     else:
-        raise Exception("Upload failed.")
-        return None
+        raise Exception(f"Upload failed: {response.text}")
 
 
 def move_fresh_file_from_downloads():
     # check if the file exists in downloads. If it does, move it to the current directory and return the path
-    if os.path.exists('/Users/erlingolweus/Downloads/finn-eiendom.csv'):
-        os.rename(
-            '/Users/erlingolweus/Downloads/finn-eiendom.csv',
-            f'{PATH_ROOT}/files/finn-eiendom.csv',
-        )
-        return f'{PATH_ROOT}/files/finn-eiendom.csv'
+    import shutil
+    download_path = os.getenv('DOWNLOAD_PATH')
+    download_file_name = os.getenv('DOWNLOAD_FILE_NAME')
+    source = f'{download_path}/{download_file_name}'
+    dest = f'{PATH_ROOT}/files/{download_file_name}'
+    if os.path.exists(source):
+        try:
+            shutil.copy2(source, dest)
+            os.remove(source)
+            print(f"Moved {source} to {dest}")
+            return dest
+        except PermissionError:
+            try:
+                shutil.copy2(source, dest)
+                print(f"Copied {source} to {dest} (could not delete original)")
+                return dest
+            except Exception as e:
+                print(f"Could not copy file from downloads: {e}")
+                return None
     else:
         return None
-
-
-def extract_feature_ids(dataset):
-    return [feature['id'] for feature in dataset['geometries']['features']]
 
 
 def file_last_modified_time(file_path):
@@ -143,6 +123,7 @@ def main():
     username = os.getenv('ATLAS_USERNAME')
     password = os.getenv('ATLAS_PASSWORD')
     dataset_id = os.getenv('DATASET_ID')
+    webhook_url = os.getenv('WEBHOOK_URL')
     move_fresh_file_from_downloads()
 
     token = fetch_jwt_token(username, password)
@@ -163,10 +144,7 @@ def main():
         if source_mod_time < output_mod_time:
             print("The data is already up-to-date. No need to process.")
             print("Uploading the existing file to Atlas...")
-            delete_existing_dataset_features(dataset_id, headers)
-            upload_dataset_file(
-                f'{PATH_ROOT}/files/merged_finn_eiendom.geojson', dataset_id, headers
-            )
+            upload_dataset_file(f'{PATH_ROOT}/files/merged_finn_eiendom.geojson', webhook_url)
             return
         else:
             print("The source file is newer than the output file. Geocoding the data...")
@@ -176,28 +154,31 @@ def main():
         fresh_df = geocode_and_process(source_file_path, source_mod_time, geocoded_data_path)
         # georeference the new data
 
-    live_dataset_file = get_existing_dataset_file(dataset_id, headers)
+    if dataset_id:
+        live_dataset_file = get_existing_dataset_file(dataset_id, headers)
 
-    # save the existing dataset with timestamp in case we need to revert
-    with open(
-        f'{PATH_ROOT}/old_datasets/existing_finn_eiendom_{pd.Timestamp.now()}.geojson', 'w'
-    ) as f:
-        json.dump(live_dataset_file, f)
+        # save the existing dataset with timestamp in case we need to revert
+        with open(
+            f'{PATH_ROOT}/old_datasets/existing_finn_eiendom_{pd.Timestamp.now()}.geojson', 'w'
+        ) as f:
+            json.dump(live_dataset_file, f)
 
-    live_dataset_path = f'{PATH_ROOT}/files/existing_finn_eiendom.csv'
-    live_dataframe = geojson_to_csv(live_dataset_file, live_dataset_path)
-    merged_file_path = f'{PATH_ROOT}/files/merged_finn_eiendom'
-    identifying_columns = ['annonse-href']
+        live_dataset_path = f'{PATH_ROOT}/files/existing_finn_eiendom.csv'
+        live_dataframe = geojson_to_csv(live_dataset_file, live_dataset_path)
+        merged_file_path = f'{PATH_ROOT}/files/merged_finn_eiendom'
+        identifying_columns = ['annonse-href']
 
-    # merge the datasets
-    print("Merging dataframes...")
-    merge_dataframes(live_dataframe, fresh_df, merged_file_path, identifying_columns)
+        # merge the datasets
+        print("Merging dataframes...")
+        merge_dataframes(live_dataframe, fresh_df, merged_file_path, identifying_columns)
 
-    # delete existing features
-    delete_existing_dataset_features(dataset_id, headers)
-
-    # upload the merged file
-    upload_dataset_file(f'{PATH_ROOT}/files/merged_finn_eiendom.geojson', dataset_id, headers)
+        # upload the merged file via webhook
+        upload_dataset_file(f'{PATH_ROOT}/files/merged_finn_eiendom.geojson', webhook_url)
+    else:
+        print("No dataset ID provided. Skipping download and merge, uploading fresh data only...")
+        output_path = f'{PATH_ROOT}/files/merged_finn_eiendom'
+        df_to_geojson(fresh_df, output_path)
+        upload_dataset_file(f'{output_path}.geojson', webhook_url)
 
 
 if __name__ == '__main__':

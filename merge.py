@@ -115,6 +115,21 @@ def merge_dataframes(
     return merged_df
 
 
+def df_to_geojson(df, output_path):
+    """Convert a DataFrame with longitude/latitude columns to GeoJSON."""
+    preprocessed_df = preprocess_gdf_for_geojson(df.copy())
+    # Convert nullable dtypes to standard numpy dtypes for GeoJSON compatibility
+    for col in preprocessed_df.columns:
+        if preprocessed_df[col].dtype.name in ('Int64', 'Float64', 'boolean'):
+            preprocessed_df[col] = preprocessed_df[col].astype(object).where(preprocessed_df[col].notna(), None)
+    gdf = gpd.GeoDataFrame(
+        preprocessed_df,
+        geometry=gpd.points_from_xy(preprocessed_df.longitude, preprocessed_df.latitude),
+    )
+    gdf.to_file(output_path + ".geojson", driver='GeoJSON')
+    print(f"Saved to {output_path}.geojson")
+
+
 def preprocess_gdf_for_geojson(gdf):
     """
     Preprocess a GeoDataFrame to ensure it can be saved to GeoJSON format by converting

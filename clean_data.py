@@ -50,13 +50,14 @@ def average_hyphenated_values(value):
 
 
 # Function to get latitude and longitude from the address using geocoding
-def get_lat_long(row, geocode_counter):
+def get_lat_long(row, geocode_counter, total_rows):
     geolocator = Nominatim(user_agent="your_geocoding_app_name")
     # clean up the address string by removing any pairs of parentheses and their contents
     formatted_address = format_address(row)['adresse']
     location = geolocator.geocode(formatted_address)
-    if geocode_counter % 10 == 0:
-        print(f"Geocoded {geocode_counter} addresses.")
+    if geocode_counter % 10 == 0 and geocode_counter > 0:
+        remaining = total_rows - geocode_counter
+        print(f"Geocoded {geocode_counter}/{total_rows} addresses. ~{remaining // 60}m {remaining % 60}s remaining.")
     time.sleep(1)  # Sleep for 1 second every 10 requests to avoid Nominatim rate limits
     if location:
         row['latitude'], row['longitude'] = location.latitude, location.longitude
@@ -70,6 +71,8 @@ def geocode_data(
     save_data=True,
 ):
     data = pd.read_csv(file_path).to_dict(orient='records')
+    total_rows = len(data)
+    print(f"Starting geocoding of {total_rows} rows. Estimated time: ~{total_rows} seconds ({total_rows // 60} min {total_rows % 60} sec)")
 
     # Initialize the geocode counter
     geocode_counter = 0
@@ -77,7 +80,7 @@ def geocode_data(
     # Loop over each row in the list of dictionaries
     for row in data:
         try:
-            get_lat_long(row, geocode_counter)
+            get_lat_long(row, geocode_counter, total_rows)
             geocode_counter += 1
         except Exception as e:
             print(f"Error processing row: {e}")
