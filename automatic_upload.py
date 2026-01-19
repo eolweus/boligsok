@@ -29,6 +29,7 @@ def fetch_jwt_token(username, password):
 
 
 def get_existing_dataset_file(datasetId, headers):
+    print(f"Downloading existing dataset {datasetId} from Atlas...")
     url = 'https://gis-api.atlas.co'
     reqUrl = f"{url}/datasets/download/{datasetId}?format=GEOJSON"
     response = requests.request("GET", reqUrl, headers=headers)
@@ -43,13 +44,18 @@ def get_existing_dataset_file(datasetId, headers):
                 for file_name in zip_ref.namelist():
                     if file_name.endswith('.geojson'):
                         with zip_ref.open(file_name) as geojson_file:
-                            return json.load(geojson_file)
+                            data = json.load(geojson_file)
+                            print(f"Downloaded {len(data.get('features', []))} features.")
+                            return data
         else:
             # Handle direct GeoJSON response
-            return response.json()
+            data = response.json()
+            print(f"Downloaded {len(data.get('features', []))} features.")
+            return data
 
         return None
     else:
+        print(f"Failed to download dataset: {response.status_code}")
         return None
 
 
@@ -79,22 +85,21 @@ def move_fresh_file_from_downloads():
     download_file_name = os.getenv('DOWNLOAD_FILE_NAME')
     source = f'{download_path}/{download_file_name}'
     dest = f'{PATH_ROOT}/files/{download_file_name}'
-    if os.path.exists(source):
-        try:
-            shutil.copy2(source, dest)
-            os.remove(source)
-            print(f"Moved {source} to {dest}")
-            return dest
-        except PermissionError:
+    try:
+        if os.path.exists(source):
             try:
+                shutil.copy2(source, dest)
+                os.remove(source)
+                print(f"Moved {source} to {dest}")
+                return dest
+            except PermissionError:
                 shutil.copy2(source, dest)
                 print(f"Copied {source} to {dest} (could not delete original)")
                 return dest
-            except Exception as e:
-                print(f"Could not copy file from downloads: {e}")
-                return None
-    else:
-        return None
+    except (PermissionError, OSError) as e:
+        print(f"Could not access downloads folder: {e}")
+        print("Please manually copy the file to the project folder if needed.")
+    return None
 
 
 def file_last_modified_time(file_path):
@@ -143,8 +148,8 @@ def main():
 
         if source_mod_time < output_mod_time:
             print("The data is already up-to-date. No need to process.")
-            print("Uploading the existing file to Atlas...")
-            upload_dataset_file(f'{PATH_ROOT}/files/merged_finn_eiendom.geojson', webhook_url)
+            # print("Uploading the existing file to Atlas...")
+            # upload_dataset_file(f'{PATH_ROOT}/files/merged_finn_eiendom.geojson', webhook_url)
             return
         else:
             print("The source file is newer than the output file. Geocoding the data...")
@@ -173,12 +178,12 @@ def main():
         merge_dataframes(live_dataframe, fresh_df, merged_file_path, identifying_columns)
 
         # upload the merged file via webhook
-        upload_dataset_file(f'{PATH_ROOT}/files/merged_finn_eiendom.geojson', webhook_url)
+        # upload_dataset_file(f'{PATH_ROOT}/files/merged_finn_eiendom.geojson', webhook_url)
     else:
         print("No dataset ID provided. Skipping download and merge, uploading fresh data only...")
         output_path = f'{PATH_ROOT}/files/merged_finn_eiendom'
         df_to_geojson(fresh_df, output_path)
-        upload_dataset_file(f'{output_path}.geojson', webhook_url)
+        # upload_dataset_file(f'{output_path}.geojson', webhook_url)
 
 
 if __name__ == '__main__':
